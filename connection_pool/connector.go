@@ -1,11 +1,13 @@
 package connection_pool
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
-	"github.com/tarantool/go-tarantool"
+	"github.com/ice-blockchain/go-tarantool"
 )
 
 // ConnectorAdapter allows to use Pooler as Connector.
@@ -21,6 +23,28 @@ var _ tarantool.Connector = (*ConnectorAdapter)(nil)
 // specified mode.
 func NewConnectorAdapter(pool Pooler, mode Mode) *ConnectorAdapter {
 	return &ConnectorAdapter{pool: pool, mode: mode}
+}
+
+func ConnectWithWritableAndRetryableDefaults(ctx context.Context, cancel context.CancelFunc, requiresWrite bool, auth BasicAuth, addresses ...string) (tarantool.Connector, error) {
+	conOpts := tarantool.Opts{
+		Timeout:       10 * time.Second,
+		MaxReconnects: 10,
+		User:          auth.User,
+		Pass:          auth.Pass,
+		Concurrency:   128 * uint32(runtime.GOMAXPROCS(-1)),
+	}
+	poolOpts := OptsPool{
+		CheckTimeout: 2 * time.Second,
+	}
+	pool, err := ConnectWithOpts(addresses, conOpts, poolOpts)
+	if err != nil {
+		return nil, err
+	}
+	mode := RO
+	if requiresWrite {
+		mode = RW
+	}
+	return NewRWBalancedConnector(NewRetriablePool(ctx, cancel, pool), mode), nil
 }
 
 // ConnectedNow reports if connections is established at the moment.
@@ -97,6 +121,10 @@ func (c *ConnectorAdapter) Upsert(space interface{},
 	tuple, ops interface{}) (*tarantool.Response, error) {
 	return c.pool.Upsert(space, tuple, ops, c.mode)
 }
+func (c *ConnectorAdapter) UpsertTyped(space interface{},
+	tuple, ops, result interface{}) error {
+	return c.pool.UpsertTyped(space, tuple, ops, result, c.mode)
+}
 
 // Call calls registered Tarantool function.
 // It uses request code for Tarantool >= 1.7 if go-tarantool
@@ -133,6 +161,10 @@ func (c *ConnectorAdapter) Eval(expr string,
 func (c *ConnectorAdapter) Execute(expr string,
 	args interface{}) (*tarantool.Response, error) {
 	return c.pool.Execute(expr, args, c.mode)
+}
+
+func (c *ConnectorAdapter) PrepareExecute(sql string, args map[string]interface{}) (resp *tarantool.Response, err error) {
+	return c.pool.PrepareExecute(sql, args, c.mode)
 }
 
 // GetTyped performs select (with limit = 1 and offset = 0)
@@ -287,6 +319,9 @@ func (c *ConnectorAdapter) ExecuteAsync(expr string,
 // synchronously.
 func (c *ConnectorAdapter) NewPrepared(expr string) (*tarantool.Prepared, error) {
 	return c.pool.NewPrepared(expr, c.mode)
+}
+func (c *ConnectorAdapter) PrepareExecuteTyped(sql string, args map[string]interface{}, result interface{}) (err error) {
+	return c.pool.PrepareExecuteTyped(sql, args, result, c.mode)
 }
 
 // NewStream creates new Stream object for connection.
