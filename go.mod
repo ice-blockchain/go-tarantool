@@ -1,9 +1,10 @@
-module github.com/tarantool/go-tarantool
+module github.com/ice-blockchain/go-tarantool
 
 go 1.11
 
 require (
 	github.com/google/uuid v1.3.0
+	github.com/hashicorp/go-multierror v1.1.1
 	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect
 	github.com/shopspring/decimal v1.3.1
 	github.com/stretchr/testify v1.7.1
