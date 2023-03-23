@@ -454,11 +454,16 @@ func (conn *Connection) ClosedNow() bool {
 
 // Close closes Connection.
 // After this method called, there is no way to reopen this Connection.
-func (conn *Connection) Close() error {
-	err := ClientError{ErrConnectionClosed, "connection closed by client"}
+func (conn *Connection) Close() (err error) {
+
 	conn.mutex.Lock()
 	defer conn.mutex.Unlock()
-	return conn.closeConnection(err, true)
+	ctx, cancel := context.WithTimeout(context.Background(), conn.opts.Timeout)
+	defer cancel()
+	for !conn.ClosedNow() && (ctx.Err() != nil || !conn.InUseNow()) {
+		err = conn.closeConnection(ClientError{ErrConnectionClosed, "connection closed by client"}, true)
+	}
+	return
 }
 
 // Addr returns a configured address of Tarantool socket.
@@ -655,7 +660,7 @@ func (conn *Connection) closeConnection(neterr error, forever bool) (err error) 
 	conn.lockShards()
 	defer conn.unlockShards()
 	if forever {
-		if conn.state != connClosed {
+		if !conn.ClosedNow() {
 			close(conn.control)
 			atomic.StoreUint32(&conn.state, connClosed)
 			conn.cond.Broadcast()
@@ -825,6 +830,23 @@ func readWatchEvent(reader io.Reader) (connWatchEvent, error) {
 	}
 
 	return event, nil
+}
+
+func (conn *Connection) InUseNow() bool {
+	for i := range conn.shard {
+		requests := &conn.shard[i].requests
+		for pos := range requests {
+			fut := requests[pos].first
+			for fut != nil {
+				if fut.ready != nil && !fut.isDone() {
+					return true
+				}
+				fut = fut.next
+			}
+		}
+	}
+
+	return false
 }
 
 func (conn *Connection) reader(r io.Reader, c Conn) {

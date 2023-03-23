@@ -21,6 +21,10 @@ func NewRWBalancedConnector(pool Pooler, defaultMode Mode) tarantool.Connector {
 	}
 }
 
+func (b *RWBalancedConnectorAdapter) Pool() Pooler {
+	return b.pool
+}
+
 func (b *RWBalancedConnectorAdapter) mode(writeable bool) Mode {
 	if writeable {
 		return RW
@@ -28,6 +32,7 @@ func (b *RWBalancedConnectorAdapter) mode(writeable bool) Mode {
 		return PreferRO
 	}
 }
+
 func (b *RWBalancedConnectorAdapter) ConnectedNow() bool {
 	ret, err := b.pool.ConnectedNow(b.defaultMode)
 	if err != nil {

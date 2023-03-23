@@ -212,23 +212,28 @@ func (connPool *ConnectionPool) ConfiguredTimeout(mode Mode) (time.Duration, err
 
 func (connPool *ConnectionPool) closeImpl() []error {
 	errs := make([]error, 0, len(connPool.addrs))
-
-	for _, addr := range connPool.addrs {
-		if conn := connPool.anyPool.DeleteConnByAddr(addr); conn != nil {
-			if err := conn.Close(); err != nil {
-				errs = append(errs, err)
+	var wg sync.WaitGroup
+	for _, address := range connPool.addrs {
+		wg.Add(1)
+		go func(addr string) {
+			defer wg.Done()
+			if conn := connPool.anyPool.GetConnByAddr(addr); conn != nil {
+				if err := conn.Close(); err != nil {
+					errs = append(errs, err)
+				}
+				connPool.anyPool.DeleteConnByAddr(addr)
+				role := UnknownRole
+				if conn := connPool.rwPool.DeleteConnByAddr(addr); conn != nil {
+					role = MasterRole
+				} else if conn := connPool.roPool.DeleteConnByAddr(addr); conn != nil {
+					role = ReplicaRole
+				}
+				connPool.handlerDeactivated(conn, role)
 			}
+		}(address)
 
-			role := UnknownRole
-			if conn := connPool.rwPool.DeleteConnByAddr(addr); conn != nil {
-				role = MasterRole
-			} else if conn := connPool.roPool.DeleteConnByAddr(addr); conn != nil {
-				role = ReplicaRole
-			}
-			connPool.handlerDeactivated(conn, role)
-		}
 	}
-
+	wg.Wait()
 	close(connPool.done)
 	return errs
 }
@@ -1136,18 +1141,30 @@ func (pool *ConnectionPool) checkNewClusterMembers() {
 			return
 		case <-timer.C:
 			var resp [][]map[string]interface{}
-			if err := pool.Call17Typed(pool.opts.NodesGetFunctionName, []interface{}{}, &resp, PreferRO); err == nil && len(resp) > 0 && len(resp[0]) > 0 {
-				addrs := resp[0]
-				for _, addr := range addrs {
-					addrUri := addr["uri"].(string)
-					if !pool.containsAddr(addrUri) {
-						pool.addrs = append(pool.addrs, addrUri)
-						s, _ := pool.handleNewConnection(addrUri, true) // We 100% have active connection cuz we got it before.
-						go pool.checker(s)
+			pool.poolsMutex.Lock()
+			if pool.state.get() == connectedState {
+				pool.poolsMutex.Unlock()
+				if err := pool.Call17Typed(pool.opts.NodesGetFunctionName, []interface{}{}, &resp, PreferRO); err == nil && len(resp) > 0 && len(resp[0]) > 0 {
+					addrs := resp[0]
+					for _, addr := range addrs {
+						addrUri := addr["uri"].(string)
+						if !pool.containsAddr(addrUri) {
+							pool.addrs = append(pool.addrs, addrUri)
+							pool.poolsMutex.Lock()
+							if pool.state.get() == connectedState {
+								s, _ := pool.handleNewConnection(addrUri, true) // We 100% have active connection cuz we got it before.
+								pool.poolsMutex.Unlock()
+								go pool.checker(s)
+							} else {
+								pool.poolsMutex.Unlock()
+							}
+						}
 					}
+				} else {
+					log.Printf("Failed to fetch new cluster configuration %v\n", err)
 				}
 			} else {
-				log.Printf("Failed to fetch new cluster configuration %v\n", err)
+				pool.poolsMutex.Unlock()
 			}
 		}
 	}
