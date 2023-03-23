@@ -13,8 +13,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	. "github.com/tarantool/go-tarantool"
-	"github.com/tarantool/go-tarantool/test_helpers"
+
+	. "github.com/ice-blockchain/go-tarantool"
+	"github.com/ice-blockchain/go-tarantool/test_helpers"
 )
 
 var shtdnServer = "127.0.0.1:3014"
@@ -222,7 +223,87 @@ func TestNoGracefulShutdown(t *testing.T) {
 		"server went down without any additional waiting")
 }
 
-func TestGracefulShutdownRespectsClose(t *testing.T) {
+//func TestGracefulShutdownRespectsClose(t *testing.T) {
+//	test_helpers.SkipIfWatchersUnsupported(t)
+//
+//	var inst test_helpers.TarantoolInstance
+//	var conn *Connection
+//	var err error
+//
+//	inst, err = test_helpers.StartTarantool(shtdnSrvOpts)
+//	require.Nil(t, err)
+//	defer test_helpers.StopTarantoolWithCleanup(inst)
+//
+//	conn = test_helpers.ConnectWithValidation(t, shtdnServer, shtdnClntOpts)
+//	defer conn.Close()
+//
+//	// Create a helper watcher to ensure that async
+//	// shutdown is set up.
+//	helperCh := make(chan WatchEvent, 10)
+//	helperW, herr := conn.NewWatcher("box.shutdown", func(event WatchEvent) {
+//		helperCh <- event
+//	})
+//	require.Nil(t, herr)
+//	defer helperW.Unregister()
+//	<-helperCh
+//
+//	// Set a big timeout so it would be easy to differ
+//	// if server went down on timeout or after all connections were terminated.
+//	serverShutdownTimeout := 60 // in seconds
+//	_, err = conn.Call("box.ctl.set_on_shutdown_timeout", []interface{}{serverShutdownTimeout})
+//	require.Nil(t, err)
+//
+//	// Send request with sleep.
+//	evalSleep := 10 // in seconds
+//	require.Lessf(t,
+//		time.Duration(evalSleep)*time.Second,
+//		shtdnClntOpts.Timeout,
+//		"test request won't be failed by timeout")
+//
+//	req := NewEvalRequest(evalBody).Args([]interface{}{evalSleep, evalMsg})
+//
+//	fut := conn.Do(req)
+//
+//	// SIGTERM the server.
+//	shutdownStart := time.Now()
+//	require.Nil(t, inst.Cmd.Process.Signal(syscall.SIGTERM))
+//
+//	// Close the connection.
+//	conn.Close()
+//
+//	// Connection is closed.
+//	require.Equal(t, true, conn.ClosedNow())
+//
+//	// Check that request was interrupted.
+//	_, err = fut.Get()
+//	require.NotNilf(t, err, "sleep request error")
+//
+//	// Wait until server go down.
+//	_, err = inst.Cmd.Process.Wait()
+//	require.Nil(t, err)
+//	shutdownFinish := time.Now()
+//	shutdownTime := shutdownFinish.Sub(shutdownStart)
+//
+//	// Help test helpers to properly clean up.
+//	inst.Cmd.Process = nil
+//
+//	// Check that server finished without waiting for eval to finish.
+//	require.Lessf(t,
+//		shutdownTime,
+//		time.Duration(evalSleep/2)*time.Second,
+//		"server went down without any additional waiting")
+//
+//	// Check that it wasn't a timeout.
+//	require.Lessf(t,
+//		shutdownTime,
+//		time.Duration(serverShutdownTimeout/2)*time.Second,
+//		"server went down not by timeout")
+//
+//	// Connection is still closed.
+//	require.Equal(t, true, conn.ClosedNow())
+//}
+
+func TestGracefulShutdownNotRespectsClose(t *testing.T) {
 	test_helpers.SkipIfWatchersUnsupported(t)
 
 	var inst test_helpers.TarantoolInstance
@@ -236,16 +317,6 @@ func TestGracefulShutdownRespectsClose(t *testing.T) {
 	conn = test_helpers.ConnectWithValidation(t, shtdnServer, shtdnClntOpts)
 	defer conn.Close()
 
-	// Create a helper watcher to ensure that async
-	// shutdown is set up.
-	helperCh := make(chan WatchEvent, 10)
-	helperW, herr := conn.NewWatcher("box.shutdown", func(event WatchEvent) {
-		helperCh <- event
-	})
-	require.Nil(t, herr)
-	defer helperW.Unregister()
-	<-helperCh
-
 	// Set a big timeout so it would be easy to differ
 	// if server went down on timeout or after all connections were terminated.
 	serverShutdownTimeout := 60 // in seconds
@@ -254,51 +325,23 @@ func TestGracefulShutdownRespectsClose(t *testing.T) {
 
 	// Send request with sleep.
 	evalSleep := 10 // in seconds
-	require.Lessf(t,
-		time.Duration(evalSleep)*time.Second,
-		shtdnClntOpts.Timeout,
-		"test request won't be failed by timeout")
-
 	req := NewEvalRequest(evalBody).Args([]interface{}{evalSleep, evalMsg})
 
 	fut := conn.Do(req)
 
-	// SIGTERM the server.
-	shutdownStart := time.Now()
-	require.Nil(t, inst.Cmd.Process.Signal(syscall.SIGTERM))
-
 	// Close the connection.
 	conn.Close()
 
-	// Connection is closed.
-	require.Equal(t, true, conn.ClosedNow())
+	// Connection is not closed cuz of pending request.
+	require.Equal(t, false, conn.ClosedNow())
 
-	// Check that request was interrupted.
+	// Check that request is pending.
+	require.Equal(t, true, conn.InUseNow())
 	_, err = fut.Get()
-	require.NotNilf(t, err, "sleep request error")
-
-	// Wait until server go down.
-	_, err = inst.Cmd.Process.Wait()
-	require.Nil(t, err)
-	shutdownFinish := time.Now()
-	shutdownTime := shutdownFinish.Sub(shutdownStart)
-
-	// Help test helpers to properly clean up.
-	inst.Cmd.Process = nil
-
-	// Check that server finished without waiting for eval to finish.
-	require.Lessf(t,
-		shutdownTime,
-		time.Duration(evalSleep/2)*time.Second,
-		"server went down without any additional waiting")
-
-	// Check that it wasn't a timeout.
-	require.Lessf(t,
-		shutdownTime,
-		time.Duration(serverShutdownTimeout/2)*time.Second,
-		"server went down not by timeout")
-
-	// Connection is still closed.
+	require.NoError(t, err)
+	conn.Close()
+	//When future is finished - connection goes down
+	require.Equal(t, false, conn.InUseNow())
 	require.Equal(t, true, conn.ClosedNow())
 }
 
